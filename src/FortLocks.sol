@@ -4,6 +4,7 @@ pragma solidity 0.8.35;
 import {IERC721} from "@openzeppelin/contracts/token/ERC721/IERC721.sol";
 import {IERC721Receiver} from "@openzeppelin/contracts/token/ERC721/IERC721Receiver.sol";
 import {IERC20} from "@openzeppelin/contracts/token/ERC20/IERC20.sol";
+import {SafeERC20} from "@openzeppelin/contracts/token/ERC20/utils/SafeERC20.sol";
 
 interface IPositionManagerCollect {
     struct CollectParams {
@@ -34,6 +35,7 @@ interface IPositionManagerCollect {
 }
 
 contract FortLocks is IERC721Receiver {
+    using SafeERC20 for IERC20;
     error ZeroAddress();
     error NotTokenOwner();
     error AlreadyLocked();
@@ -99,19 +101,19 @@ contract FortLocks is IERC721Receiver {
         uint256 fortFee1 = (amount1 * FORT_FEE_BPS) / BPS_DENOMINATOR;
 
         if (fortFee0 > 0) {
-            IERC20(token0).transfer(FORT_FEE_RECIPIENT, fortFee0);
+            IERC20(token0).safeTransfer(FORT_FEE_RECIPIENT, fortFee0);
         }
 
         if (fortFee1 > 0) {
-            IERC20(token1).transfer(FORT_FEE_RECIPIENT, fortFee1);
+            IERC20(token1).safeTransfer(FORT_FEE_RECIPIENT, fortFee1);
         }
 
         if (amount0 > fortFee0) {
-            IERC20(token0).transfer(lockData.beneficiary, amount0 - fortFee0);
+            IERC20(token0).safeTransfer(lockData.beneficiary, amount0 - fortFee0);
         }
 
         if (amount1 > fortFee1) {
-            IERC20(token1).transfer(lockData.beneficiary, amount1 - fortFee1);
+            IERC20(token1).safeTransfer(lockData.beneficiary, amount1 - fortFee1);
         }
     }
 

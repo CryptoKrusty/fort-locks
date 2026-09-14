@@ -196,4 +196,226 @@ contract FortLocksTest is Test {
         assertEq(token0.balanceOf(address(fort)), 0);
         assertEq(token1.balanceOf(address(fort)), 0);
     }
+
+    function test_RevertIfNonBeneficiaryCollectsFees() public {
+        vm.startPrank(locker);
+        positionManager.approve(address(fort), TOKEN_ID);
+        fort.lock(TOKEN_ID, beneficiary);
+        vm.stopPrank();
+
+        address attacker = address(0xBAD);
+
+        vm.expectRevert(FortLocks.NotBeneficiary.selector);
+        vm.prank(attacker);
+        fort.collectFees(TOKEN_ID);
+    }
+
+    function test_CollectFeeRoundingFavorsBeneficiary() public {
+        vm.startPrank(locker);
+        positionManager.approve(address(fort), TOKEN_ID);
+        fort.lock(TOKEN_ID, beneficiary);
+        vm.stopPrank();
+
+        uint256 fee0 = 111;
+        uint256 fee1 = 111;
+
+        token0.mint(address(positionManager), fee0);
+        token1.mint(address(positionManager), fee1);
+
+        positionManager.setFees(TOKEN_ID, fee0, fee1);
+
+        vm.prank(beneficiary);
+        fort.collectFees(TOKEN_ID);
+
+        assertEq(token0.balanceOf(fortFeeRecipient), 0);
+        assertEq(token1.balanceOf(fortFeeRecipient), 0);
+
+        assertEq(token0.balanceOf(beneficiary), 111);
+        assertEq(token1.balanceOf(beneficiary), 111);
+
+        assertEq(token0.balanceOf(address(fort)), 0);
+        assertEq(token1.balanceOf(address(fort)), 0);
+    }
+
+    function test_CollectMinimumNonZeroFortFee() public {
+        vm.startPrank(locker);
+        positionManager.approve(address(fort), TOKEN_ID);
+        fort.lock(TOKEN_ID, beneficiary);
+        vm.stopPrank();
+
+        uint256 fee0 = 112;
+        uint256 fee1 = 112;
+
+        token0.mint(address(positionManager), fee0);
+        token1.mint(address(positionManager), fee1);
+
+        positionManager.setFees(TOKEN_ID, fee0, fee1);
+
+        vm.prank(beneficiary);
+        fort.collectFees(TOKEN_ID);
+
+        assertEq(token0.balanceOf(fortFeeRecipient), 1);
+        assertEq(token1.balanceOf(fortFeeRecipient), 1);
+
+        assertEq(token0.balanceOf(beneficiary), 111);
+        assertEq(token1.balanceOf(beneficiary), 111);
+
+        assertEq(token0.balanceOf(address(fort)), 0);
+        assertEq(token1.balanceOf(address(fort)), 0);
+    }
+
+    function test_CollectHandlesOneTokenWithZeroFees() public {
+        vm.startPrank(locker);
+        positionManager.approve(address(fort), TOKEN_ID);
+        fort.lock(TOKEN_ID, beneficiary);
+        vm.stopPrank();
+
+        uint256 fee0 = 1_000 ether;
+        uint256 fee1 = 0;
+
+        token0.mint(address(positionManager), fee0);
+
+        positionManager.setFees(TOKEN_ID, fee0, fee1);
+
+        vm.prank(beneficiary);
+        fort.collectFees(TOKEN_ID);
+
+        uint256 fortFee0 = (fee0 * 90) / 10_000;
+
+        assertEq(token0.balanceOf(fortFeeRecipient), fortFee0);
+        assertEq(token0.balanceOf(beneficiary), fee0 - fortFee0);
+
+        assertEq(token1.balanceOf(fortFeeRecipient), 0);
+        assertEq(token1.balanceOf(beneficiary), 0);
+
+        assertEq(token0.balanceOf(address(fort)), 0);
+        assertEq(token1.balanceOf(address(fort)), 0);
+    }
+
+    function test_CanCollectFeesRepeatedly() public {
+        vm.startPrank(locker);
+        positionManager.approve(address(fort), TOKEN_ID);
+        fort.lock(TOKEN_ID, beneficiary);
+        vm.stopPrank();
+
+        uint256 firstFee = 1_000 ether;
+
+        token0.mint(address(positionManager), firstFee);
+        positionManager.setFees(TOKEN_ID, firstFee, 0);
+
+        vm.prank(beneficiary);
+        fort.collectFees(TOKEN_ID);
+
+        uint256 secondFee = 500 ether;
+
+        token0.mint(address(positionManager), secondFee);
+        positionManager.setFees(TOKEN_ID, secondFee, 0);
+
+        vm.prank(beneficiary);
+        fort.collectFees(TOKEN_ID);
+
+        uint256 totalFees = firstFee + secondFee;
+        uint256 expectedFortFee = ((firstFee * 90) / 10_000) + ((secondFee * 90) / 10_000);
+
+        assertEq(token0.balanceOf(fortFeeRecipient), expectedFortFee);
+
+        assertEq(token0.balanceOf(beneficiary), totalFees - expectedFortFee);
+
+        assertEq(token0.balanceOf(address(fort)), 0);
+
+        // The V3 position itself remains permanently held by Fort.
+        assertEq(positionManager.ownerOf(TOKEN_ID), address(fort));
+    }
+
+    function test_CollectHandlesZeroFees() public {
+        vm.startPrank(locker);
+        positionManager.approve(address(fort), TOKEN_ID);
+        fort.lock(TOKEN_ID, beneficiary);
+        vm.stopPrank();
+
+        vm.prank(beneficiary);
+        fort.collectFees(TOKEN_ID);
+
+        assertEq(token0.balanceOf(fortFeeRecipient), 0);
+        assertEq(token1.balanceOf(fortFeeRecipient), 0);
+
+        assertEq(token0.balanceOf(beneficiary), 0);
+        assertEq(token1.balanceOf(beneficiary), 0);
+
+        assertEq(token0.balanceOf(address(fort)), 0);
+        assertEq(token1.balanceOf(address(fort)), 0);
+
+        assertEq(positionManager.ownerOf(TOKEN_ID), address(fort));
+    }
+
+    function test_RevertCollectForUnlockedToken() public {
+        uint256 unlockedTokenId = 999;
+
+        vm.expectRevert(FortLocks.NotBeneficiary.selector);
+        vm.prank(beneficiary);
+        fort.collectFees(unlockedTokenId);
+    }
+
+    function test_LockedNFTCannotBeTransferredByBeneficiary() public {
+        vm.startPrank(locker);
+        positionManager.approve(address(fort), TOKEN_ID);
+        fort.lock(TOKEN_ID, beneficiary);
+        vm.stopPrank();
+
+        vm.startPrank(beneficiary);
+
+        vm.expectRevert();
+        positionManager.transferFrom(address(fort), beneficiary, TOKEN_ID);
+
+        vm.stopPrank();
+
+        assertEq(positionManager.ownerOf(TOKEN_ID), address(fort));
+    }
+
+    function test_LockedNFTCannotBeTransferredByOriginalOwner() public {
+        vm.startPrank(locker);
+        positionManager.approve(address(fort), TOKEN_ID);
+        fort.lock(TOKEN_ID, beneficiary);
+        vm.stopPrank();
+
+        vm.startPrank(locker);
+
+        vm.expectRevert();
+        positionManager.transferFrom(address(fort), locker, TOKEN_ID);
+
+        vm.stopPrank();
+
+        assertEq(positionManager.ownerOf(TOKEN_ID), address(fort));
+    }
+
+    function testFuzz_ArbitraryAddressCannotTransferLockedNFT(address caller) public {
+        vm.assume(caller != address(fort));
+
+        vm.startPrank(locker);
+        positionManager.approve(address(fort), TOKEN_ID);
+        fort.lock(TOKEN_ID, beneficiary);
+        vm.stopPrank();
+
+        vm.startPrank(caller);
+
+        vm.expectRevert();
+        positionManager.transferFrom(address(fort), caller, TOKEN_ID);
+
+        vm.stopPrank();
+
+        assertEq(positionManager.ownerOf(TOKEN_ID), address(fort));
+    }
+
+    function test_BeneficiaryNeverReceivesNFTApproval() public {
+        vm.startPrank(locker);
+        positionManager.approve(address(fort), TOKEN_ID);
+        fort.lock(TOKEN_ID, beneficiary);
+        vm.stopPrank();
+
+        assertEq(positionManager.getApproved(TOKEN_ID), address(0));
+
+        assertFalse(positionManager.isApprovedForAll(address(fort), beneficiary));
+
+        assertEq(positionManager.ownerOf(TOKEN_ID), address(fort));
+    }
 }
