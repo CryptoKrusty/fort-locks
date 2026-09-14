@@ -1,0 +1,199 @@
+// SPDX-License-Identifier: MIT
+pragma solidity 0.8.35;
+
+import {Test} from "forge-std/Test.sol";
+import {ERC721} from "@openzeppelin/contracts/token/ERC721/ERC721.sol";
+
+import {FortLocks, IPositionManagerCollect} from "../src/FortLocks.sol";
+import {ERC20} from "@openzeppelin/contracts/token/ERC20/ERC20.sol";
+
+contract MockERC20 is ERC20 {
+    constructor(string memory name, string memory symbol) ERC20(name, symbol) {}
+
+    function mint(address to, uint256 amount) external {
+        _mint(to, amount);
+    }
+}
+
+contract MockPositionManager is ERC721 {
+    mapping(uint256 tokenId => uint256 amount0) public fees0;
+    mapping(uint256 tokenId => uint256 amount1) public fees1;
+    MockERC20 public token0;
+    MockERC20 public token1;
+
+    constructor(MockERC20 _token0, MockERC20 _token1) ERC721("Mock Uniswap V3 Position", "MUV3") {
+        token0 = _token0;
+        token1 = _token1;
+    }
+
+    function mint(address to, uint256 tokenId) external {
+        _mint(to, tokenId);
+    }
+
+    function setFees(uint256 tokenId, uint256 amount0, uint256 amount1) external {
+        fees0[tokenId] = amount0;
+        fees1[tokenId] = amount1;
+    }
+
+    function positions(uint256)
+        external
+        view
+        returns (uint96, address, address, address, uint24, int24, int24, uint128, uint256, uint256, uint128, uint128)
+    {
+        return (0, address(0), address(token0), address(token1), 3000, 0, 0, 1, 0, 0, 0, 0);
+    }
+
+    function collect(IPositionManagerCollect.CollectParams calldata params)
+        external
+        payable
+        returns (uint256 amount0, uint256 amount1)
+    {
+        amount0 = fees0[params.tokenId];
+        amount1 = fees1[params.tokenId];
+
+        fees0[params.tokenId] = 0;
+        fees1[params.tokenId] = 0;
+        if (amount0 > 0) {
+            token0.transfer(params.recipient, amount0);
+        }
+
+        if (amount1 > 0) {
+            token1.transfer(params.recipient, amount1);
+        }
+    }
+}
+
+contract RandomNFT is ERC721 {
+    constructor() ERC721("Random NFT", "RND") {}
+
+    function mint(address to, uint256 tokenId) external {
+        _mint(to, tokenId);
+    }
+}
+
+contract FortLocksTest is Test {
+    FortLocks fort;
+    MockPositionManager positionManager;
+    MockERC20 token0;
+    MockERC20 token1;
+
+    address locker = address(0xA11CE);
+    address beneficiary = address(0xB0B);
+    address fortFeeRecipient = address(0xFEE);
+
+    uint256 constant TOKEN_ID = 1;
+
+    function setUp() public {
+        token0 = new MockERC20("Token 0", "TK0");
+        token1 = new MockERC20("Token 1", "TK1");
+
+        positionManager = new MockPositionManager(token0, token1);
+
+        fort = new FortLocks(address(positionManager), fortFeeRecipient);
+
+        positionManager.mint(locker, TOKEN_ID);
+    }
+
+    function test_LockTransfersNFTIntoFort() public {
+        vm.startPrank(locker);
+
+        positionManager.approve(address(fort), TOKEN_ID);
+
+        fort.lock(TOKEN_ID, beneficiary);
+
+        vm.stopPrank();
+
+        assertEq(positionManager.ownerOf(TOKEN_ID), address(fort));
+    }
+
+    function test_LockStoresBeneficiary() public {
+        vm.startPrank(locker);
+
+        positionManager.approve(address(fort), TOKEN_ID);
+
+        fort.lock(TOKEN_ID, beneficiary);
+
+        vm.stopPrank();
+
+        (address storedBeneficiary) = fort.locks(TOKEN_ID);
+
+        assertEq(storedBeneficiary, beneficiary);
+    }
+
+    function test_RevertIfBeneficiaryIsZeroAddress() public {
+        vm.startPrank(locker);
+
+        positionManager.approve(address(fort), TOKEN_ID);
+
+        vm.expectRevert(FortLocks.ZeroAddress.selector);
+
+        fort.lock(TOKEN_ID, address(0));
+
+        vm.stopPrank();
+    }
+
+    function test_RevertIfCallerIsNotTokenOwner() public {
+        address attacker = address(0xBAD);
+
+        vm.prank(locker);
+        positionManager.approve(address(fort), TOKEN_ID);
+
+        vm.expectRevert(FortLocks.NotTokenOwner.selector);
+
+        vm.prank(attacker);
+        fort.lock(TOKEN_ID, beneficiary);
+    }
+
+    function test_RejectsArbitraryERC721() public {
+        RandomNFT randomNFT = new RandomNFT();
+
+        uint256 randomTokenId = 77;
+
+        randomNFT.mint(address(this), randomTokenId);
+
+        vm.expectRevert(FortLocks.InvalidNFT.selector);
+
+        randomNFT.safeTransferFrom(address(this), address(fort), randomTokenId);
+    }
+
+    function test_RejectsDirectPositionNFTTransfer() public {
+        vm.startPrank(locker);
+
+        vm.expectRevert(FortLocks.InvalidTransfer.selector);
+
+        positionManager.safeTransferFrom(locker, address(fort), TOKEN_ID);
+
+        vm.stopPrank();
+    }
+
+    function test_CollectSplitsFeesCorrectly() public {
+        vm.startPrank(locker);
+        positionManager.approve(address(fort), TOKEN_ID);
+        fort.lock(TOKEN_ID, beneficiary);
+        vm.stopPrank();
+
+        uint256 fee0 = 1_000 ether;
+        uint256 fee1 = 500 ether;
+
+        token0.mint(address(positionManager), fee0);
+        token1.mint(address(positionManager), fee1);
+
+        positionManager.setFees(TOKEN_ID, fee0, fee1);
+
+        vm.prank(beneficiary);
+        fort.collectFees(TOKEN_ID);
+
+        uint256 fortFee0 = (fee0 * 90) / 10_000;
+        uint256 fortFee1 = (fee1 * 90) / 10_000;
+
+        assertEq(token0.balanceOf(fortFeeRecipient), fortFee0);
+        assertEq(token1.balanceOf(fortFeeRecipient), fortFee1);
+
+        assertEq(token0.balanceOf(beneficiary), fee0 - fortFee0);
+
+        assertEq(token1.balanceOf(beneficiary), fee1 - fortFee1);
+
+        assertEq(token0.balanceOf(address(fort)), 0);
+        assertEq(token1.balanceOf(address(fort)), 0);
+    }
+}
