@@ -15,6 +15,39 @@ contract MockERC20 is ERC20 {
     }
 }
 
+contract ReentrantERC20 is ERC20 {
+    FortLocks public fort;
+    uint256 public tokenId;
+    bool public attackEnabled;
+    bool public reentryBlocked;
+
+    constructor() ERC20("Reentrant Token", "REENT") {}
+
+    function mint(address to, uint256 amount) external {
+        _mint(to, amount);
+    }
+
+    function configureAttack(FortLocks _fort, uint256 _tokenId) external {
+        fort = _fort;
+        tokenId = _tokenId;
+        attackEnabled = true;
+    }
+
+    function transfer(address to, uint256 value) public override returns (bool) {
+        if (attackEnabled) {
+            attackEnabled = false;
+
+            try fort.collectFees(tokenId) {
+                reentryBlocked = false;
+            } catch {
+                reentryBlocked = true;
+            }
+        }
+
+        return super.transfer(to, value);
+    }
+}
+
 contract MockPositionManager is ERC721 {
     mapping(uint256 tokenId => uint256 amount0) public fees0;
     mapping(uint256 tokenId => uint256 amount1) public fees1;
@@ -417,5 +450,81 @@ contract FortLocksTest is Test {
         assertFalse(positionManager.isApprovedForAll(address(fort), beneficiary));
 
         assertEq(positionManager.ownerOf(TOKEN_ID), address(fort));
+    }
+
+    function test_LockEmitsLockedEvent() public {
+        vm.startPrank(locker);
+        positionManager.approve(address(fort), TOKEN_ID);
+
+        vm.expectEmit(true, true, false, false);
+        emit FortLocks.Locked(TOKEN_ID, beneficiary);
+
+        fort.lock(TOKEN_ID, beneficiary);
+        vm.stopPrank();
+    }
+
+    function test_CollectEmitsFeesCollectedEvent() public {
+        vm.startPrank(locker);
+        positionManager.approve(address(fort), TOKEN_ID);
+        fort.lock(TOKEN_ID, beneficiary);
+        vm.stopPrank();
+
+        uint256 fee0 = 1_000 ether;
+        uint256 fee1 = 500 ether;
+
+        token0.mint(address(positionManager), fee0);
+        token1.mint(address(positionManager), fee1);
+
+        positionManager.setFees(TOKEN_ID, fee0, fee1);
+
+        uint256 fortFee0 = (fee0 * 90) / 10_000;
+        uint256 fortFee1 = (fee1 * 90) / 10_000;
+
+        vm.expectEmit(true, true, false, true);
+        emit FortLocks.FeesCollected(TOKEN_ID, beneficiary, fee0, fee1, fortFee0, fortFee1);
+
+        vm.prank(beneficiary);
+        fort.collectFees(TOKEN_ID);
+    }
+
+    function test_ReentrancyDuringFeeDistributionIsBlocked() public {
+        ReentrantERC20 maliciousToken = new ReentrantERC20();
+        MockERC20 normalToken = new MockERC20("Normal Token", "NORMAL");
+
+        MockPositionManager maliciousPositionManager =
+            new MockPositionManager(MockERC20(address(maliciousToken)), normalToken);
+
+        FortLocks protectedFort = new FortLocks(address(maliciousPositionManager), fortFeeRecipient);
+
+        uint256 attackTokenId = 777;
+        uint256 fees = 1_000 ether;
+
+        maliciousPositionManager.mint(locker, attackTokenId);
+
+        vm.startPrank(locker);
+        maliciousPositionManager.approve(address(protectedFort), attackTokenId);
+        protectedFort.lock(attackTokenId, beneficiary);
+        vm.stopPrank();
+
+        maliciousToken.mint(address(maliciousPositionManager), fees);
+
+        maliciousPositionManager.setFees(attackTokenId, fees, 0);
+
+        maliciousToken.configureAttack(protectedFort, attackTokenId);
+
+        vm.prank(beneficiary);
+        protectedFort.collectFees(attackTokenId);
+
+        assertTrue(maliciousToken.reentryBlocked());
+
+        uint256 expectedFortFee = (fees * 90) / 10_000;
+
+        assertEq(maliciousToken.balanceOf(fortFeeRecipient), expectedFortFee);
+
+        assertEq(maliciousToken.balanceOf(beneficiary), fees - expectedFortFee);
+
+        assertEq(maliciousToken.balanceOf(address(protectedFort)), 0);
+
+        assertEq(maliciousPositionManager.ownerOf(attackTokenId), address(protectedFort));
     }
 }

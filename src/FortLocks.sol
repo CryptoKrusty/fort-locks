@@ -5,6 +5,7 @@ import {IERC721} from "@openzeppelin/contracts/token/ERC721/IERC721.sol";
 import {IERC721Receiver} from "@openzeppelin/contracts/token/ERC721/IERC721Receiver.sol";
 import {IERC20} from "@openzeppelin/contracts/token/ERC20/IERC20.sol";
 import {SafeERC20} from "@openzeppelin/contracts/token/ERC20/utils/SafeERC20.sol";
+import {ReentrancyGuard} from "@openzeppelin/contracts/utils/ReentrancyGuard.sol";
 
 interface IPositionManagerCollect {
     struct CollectParams {
@@ -34,8 +35,17 @@ interface IPositionManagerCollect {
     function collect(CollectParams calldata params) external payable returns (uint256 amount0, uint256 amount1);
 }
 
-contract FortLocks is IERC721Receiver {
+contract FortLocks is IERC721Receiver, ReentrancyGuard {
     using SafeERC20 for IERC20;
+    event Locked(uint256 indexed tokenId, address indexed beneficiary);
+    event FeesCollected(
+        uint256 indexed tokenId,
+        address indexed beneficiary,
+        uint256 amount0,
+        uint256 amount1,
+        uint256 fortFee0,
+        uint256 fortFee1
+    );
     error ZeroAddress();
     error NotTokenOwner();
     error AlreadyLocked();
@@ -76,9 +86,10 @@ contract FortLocks is IERC721Receiver {
         locks[tokenId] = Lock({beneficiary: beneficiary});
 
         positionManager.safeTransferFrom(msg.sender, address(this), tokenId);
+        emit Locked(tokenId, beneficiary);
     }
 
-    function collectFees(uint256 tokenId) external returns (uint256 amount0, uint256 amount1) {
+    function collectFees(uint256 tokenId) external nonReentrant returns (uint256 amount0, uint256 amount1) {
         Lock memory lockData = locks[tokenId];
 
         if (lockData.beneficiary != msg.sender) {
@@ -115,6 +126,7 @@ contract FortLocks is IERC721Receiver {
         if (amount1 > fortFee1) {
             IERC20(token1).safeTransfer(lockData.beneficiary, amount1 - fortFee1);
         }
+        emit FeesCollected(tokenId, lockData.beneficiary, amount0, amount1, fortFee0, fortFee1);
     }
 
     function _getPositionTokens(uint256 tokenId) internal view returns (address token0, address token1) {
