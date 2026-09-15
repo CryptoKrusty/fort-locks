@@ -74,7 +74,7 @@ contract FortLocks is IERC721Receiver, ReentrancyGuard {
         FORT_FEE_RECIPIENT = _fortFeeRecipient;
     }
 
-    function lock(uint256 tokenId, address beneficiary) external {
+    function lock(uint256 tokenId, address beneficiary) external nonReentrant {
         if (beneficiary == address(0)) revert ZeroAddress();
         if (locks[tokenId].beneficiary != address(0)) revert AlreadyLocked();
 
@@ -87,6 +87,9 @@ contract FortLocks is IERC721Receiver, ReentrancyGuard {
         locks[tokenId] = Lock({beneficiary: beneficiary});
 
         positionManager.safeTransferFrom(msg.sender, address(this), tokenId);
+
+        _flushPreExistingOwedTokens(tokenId, beneficiary);
+
         emit Locked(tokenId, beneficiary);
     }
 
@@ -135,6 +138,18 @@ contract FortLocks is IERC721Receiver, ReentrancyGuard {
 
         token0 = position.token0;
         token1 = position.token1;
+    }
+
+    function _flushPreExistingOwedTokens(uint256 tokenId, address beneficiary) internal {
+        IPositionManagerCollect(POSITION_MANAGER)
+            .collect(
+                IPositionManagerCollect.CollectParams({
+                    tokenId: tokenId,
+                    recipient: beneficiary,
+                    amount0Max: type(uint128).max,
+                    amount1Max: type(uint128).max
+                })
+            );
     }
 
     function onERC721Received(address operator, address, uint256, bytes calldata) external view returns (bytes4) {

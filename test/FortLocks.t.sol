@@ -6,6 +6,7 @@ import {ERC721} from "@openzeppelin/contracts/token/ERC721/ERC721.sol";
 
 import {FortLocks, IPositionManagerCollect} from "../src/FortLocks.sol";
 import {ERC20} from "@openzeppelin/contracts/token/ERC20/ERC20.sol";
+import {ReentrancyGuard} from "@openzeppelin/contracts/utils/ReentrancyGuard.sol";
 
 contract MockERC20 is ERC20 {
     constructor(string memory name, string memory symbol) ERC20(name, symbol) {}
@@ -20,6 +21,8 @@ contract ReentrantERC20 is ERC20 {
     uint256 public tokenId;
     bool public attackEnabled;
     bool public reentryBlocked;
+    bool public attackLock;
+    bytes public reentryRevertData;
 
     constructor() ERC20("Reentrant Token", "REENT") {}
 
@@ -33,14 +36,31 @@ contract ReentrantERC20 is ERC20 {
         attackEnabled = true;
     }
 
+    function configureLockAttack(FortLocks _fort, uint256 _tokenId) external {
+        fort = _fort;
+        tokenId = _tokenId;
+        attackEnabled = true;
+        attackLock = true;
+    }
+
     function transfer(address to, uint256 value) public override returns (bool) {
         if (attackEnabled) {
             attackEnabled = false;
 
-            try fort.collectFees(tokenId) {
-                reentryBlocked = false;
-            } catch {
-                reentryBlocked = true;
+            if (attackLock) {
+                try fort.lock(tokenId, address(this)) {
+                    reentryBlocked = false;
+                } catch (bytes memory reason) {
+                    reentryBlocked = true;
+                    reentryRevertData = reason;
+                }
+            } else {
+                try fort.collectFees(tokenId) {
+                    reentryBlocked = false;
+                } catch (bytes memory reason) {
+                    reentryBlocked = true;
+                    reentryRevertData = reason;
+                }
             }
         }
 
@@ -527,6 +547,7 @@ contract FortLocksTest is Test {
         protectedFort.collectFees(attackTokenId);
 
         assertTrue(maliciousToken.reentryBlocked());
+        assertEq(bytes4(maliciousToken.reentryRevertData()), ReentrancyGuard.ReentrancyGuardReentrantCall.selector);
 
         uint256 expectedFortFee = (fees * 90) / 10_000;
 
@@ -537,6 +558,48 @@ contract FortLocksTest is Test {
         assertEq(maliciousToken.balanceOf(address(protectedFort)), 0);
 
         assertEq(positionManager.ownerOf(attackTokenId), address(protectedFort));
+    }
+
+    function test_ReentrancyDuringInitialFlushIsBlocked() public {
+        ReentrantERC20 maliciousToken = new ReentrantERC20();
+        MockERC20 normalToken = new MockERC20("Normal Token", "NORMAL");
+
+        positionManager.initializeTokens(MockERC20(address(maliciousToken)), normalToken);
+
+        FortLocks protectedFort = new FortLocks(fortFeeRecipient);
+
+        uint256 attackTokenId = 888;
+        uint256 preExistingAmount = 1_000 ether;
+
+        positionManager.mint(locker, attackTokenId);
+
+        maliciousToken.mint(address(positionManager), preExistingAmount);
+
+        positionManager.setFees(attackTokenId, preExistingAmount, 0);
+
+        maliciousToken.configureLockAttack(protectedFort, attackTokenId);
+
+        vm.startPrank(locker);
+
+        positionManager.approve(address(protectedFort), attackTokenId);
+
+        protectedFort.lock(attackTokenId, beneficiary);
+
+        vm.stopPrank();
+
+        assertTrue(maliciousToken.reentryBlocked());
+
+        assertEq(bytes4(maliciousToken.reentryRevertData()), ReentrancyGuard.ReentrancyGuardReentrantCall.selector);
+
+        assertEq(maliciousToken.balanceOf(beneficiary), preExistingAmount);
+
+        assertEq(maliciousToken.balanceOf(fortFeeRecipient), 0);
+
+        assertEq(maliciousToken.balanceOf(address(protectedFort)), 0);
+
+        assertEq(positionManager.ownerOf(attackTokenId), address(protectedFort));
+
+        assertEq(protectedFort.locks(attackTokenId), beneficiary);
     }
 
     function test_PositionManagerIsCanonicalEthereumUniswapV3() public view {
@@ -551,5 +614,33 @@ contract FortLocksTest is Test {
     function test_FortFeeIsPointNinePercent() public view {
         assertEq(fort.FORT_FEE_BPS(), 90);
         assertEq(fort.BPS_DENOMINATOR(), 10_000);
+    }
+
+    function test_LockFlushesPreExistingOwedTokensWithoutFortFee() public {
+        uint256 preExistingAmount0 = 10 ether;
+        uint256 preExistingAmount1 = 20 ether;
+
+        token0.mint(address(positionManager), preExistingAmount0);
+        token1.mint(address(positionManager), preExistingAmount1);
+
+        positionManager.setFees(TOKEN_ID, preExistingAmount0, preExistingAmount1);
+
+        vm.startPrank(locker);
+
+        positionManager.approve(address(fort), TOKEN_ID);
+        fort.lock(TOKEN_ID, beneficiary);
+
+        vm.stopPrank();
+
+        assertEq(token0.balanceOf(beneficiary), preExistingAmount0);
+        assertEq(token1.balanceOf(beneficiary), preExistingAmount1);
+
+        assertEq(token0.balanceOf(fortFeeRecipient), 0);
+        assertEq(token1.balanceOf(fortFeeRecipient), 0);
+
+        assertEq(token0.balanceOf(address(fort)), 0);
+        assertEq(token1.balanceOf(address(fort)), 0);
+
+        assertEq(positionManager.ownerOf(TOKEN_ID), address(fort));
     }
 }
