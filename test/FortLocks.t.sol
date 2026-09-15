@@ -59,6 +59,11 @@ contract MockPositionManager is ERC721 {
         token1 = _token1;
     }
 
+    function initializeTokens(MockERC20 _token0, MockERC20 _token1) external {
+        token0 = _token0;
+        token1 = _token1;
+    }
+
     function mint(address to, uint256 tokenId) external {
         _mint(to, tokenId);
     }
@@ -113,6 +118,7 @@ contract FortLocksTest is Test {
     address locker = address(0xA11CE);
     address beneficiary = address(0xB0B);
     address fortFeeRecipient = address(0xFEE);
+    address constant CANONICAL_POSITION_MANAGER = 0xC36442b4a4522E871399CD717aBDD847Ab11FE88;
 
     uint256 constant TOKEN_ID = 1;
 
@@ -120,9 +126,15 @@ contract FortLocksTest is Test {
         token0 = new MockERC20("Token 0", "TK0");
         token1 = new MockERC20("Token 1", "TK1");
 
-        positionManager = new MockPositionManager(token0, token1);
+        MockPositionManager implementation = new MockPositionManager(token0, token1);
 
-        fort = new FortLocks(address(positionManager), fortFeeRecipient);
+        vm.etch(CANONICAL_POSITION_MANAGER, address(implementation).code);
+
+        positionManager = MockPositionManager(CANONICAL_POSITION_MANAGER);
+
+        positionManager.initializeTokens(token0, token1);
+
+        fort = new FortLocks(fortFeeRecipient);
 
         positionManager.mint(locker, TOKEN_ID);
     }
@@ -491,24 +503,23 @@ contract FortLocksTest is Test {
         ReentrantERC20 maliciousToken = new ReentrantERC20();
         MockERC20 normalToken = new MockERC20("Normal Token", "NORMAL");
 
-        MockPositionManager maliciousPositionManager =
-            new MockPositionManager(MockERC20(address(maliciousToken)), normalToken);
+        positionManager.initializeTokens(MockERC20(address(maliciousToken)), normalToken);
 
-        FortLocks protectedFort = new FortLocks(address(maliciousPositionManager), fortFeeRecipient);
+        FortLocks protectedFort = new FortLocks(fortFeeRecipient);
 
         uint256 attackTokenId = 777;
         uint256 fees = 1_000 ether;
 
-        maliciousPositionManager.mint(locker, attackTokenId);
+        positionManager.mint(locker, attackTokenId);
 
         vm.startPrank(locker);
-        maliciousPositionManager.approve(address(protectedFort), attackTokenId);
+        positionManager.approve(address(protectedFort), attackTokenId);
         protectedFort.lock(attackTokenId, beneficiary);
         vm.stopPrank();
 
-        maliciousToken.mint(address(maliciousPositionManager), fees);
+        maliciousToken.mint(address(positionManager), fees);
 
-        maliciousPositionManager.setFees(attackTokenId, fees, 0);
+        positionManager.setFees(attackTokenId, fees, 0);
 
         maliciousToken.configureAttack(protectedFort, attackTokenId);
 
@@ -525,6 +536,20 @@ contract FortLocksTest is Test {
 
         assertEq(maliciousToken.balanceOf(address(protectedFort)), 0);
 
-        assertEq(maliciousPositionManager.ownerOf(attackTokenId), address(protectedFort));
+        assertEq(positionManager.ownerOf(attackTokenId), address(protectedFort));
+    }
+
+    function test_PositionManagerIsCanonicalEthereumUniswapV3() public view {
+        assertEq(fort.POSITION_MANAGER(), 0xC36442b4a4522E871399CD717aBDD847Ab11FE88);
+    }
+
+    function test_RevertIfFortFeeRecipientIsZeroAddress() public {
+        vm.expectRevert(FortLocks.ZeroAddress.selector);
+        new FortLocks(address(0));
+    }
+
+    function test_FortFeeIsPointNinePercent() public view {
+        assertEq(fort.FORT_FEE_BPS(), 90);
+        assertEq(fort.BPS_DENOMINATOR(), 10_000);
     }
 }

@@ -62,14 +62,15 @@ contract FortLocks is IERC721Receiver, ReentrancyGuard {
         address beneficiary;
     }
 
-    address public immutable POSITION_MANAGER;
+    address public constant POSITION_MANAGER = 0xC36442b4a4522E871399CD717aBDD847Ab11FE88;
 
     mapping(uint256 tokenId => Lock lockData) public locks;
 
-    constructor(address _positionManager, address _fortFeeRecipient) {
-        if (_positionManager == address(0) || _fortFeeRecipient == address(0)) revert ZeroAddress();
+    constructor(address _fortFeeRecipient) {
+        if (_fortFeeRecipient == address(0)) {
+            revert ZeroAddress();
+        }
 
-        POSITION_MANAGER = _positionManager;
         FORT_FEE_RECIPIENT = _fortFeeRecipient;
     }
 
