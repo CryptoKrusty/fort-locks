@@ -122,7 +122,7 @@ contract FortLocks is IERC721Receiver, ReentrancyGuard {
     function _flushPreExistingOwedTokens(uint256 tokenId, address beneficiary) internal {
         // The Position Manager sends the entire pre-existing owed amount
         // directly to the beneficiary; Fort does not charge a fee here.
-        (uint256 amount0, uint256 amount1) = IPositionManager(POSITION_MANAGER)
+        IPositionManager(POSITION_MANAGER)
             .collect(
                 IPositionManager.CollectParams({
                     tokenId: tokenId,
@@ -131,9 +131,6 @@ contract FortLocks is IERC721Receiver, ReentrancyGuard {
                     amount1Max: type(uint128).max
                 })
             );
-
-        amount0;
-        amount1;
     }
 
     function onERC721Received(address operator, address, uint256, bytes calldata) external view returns (bytes4) {
