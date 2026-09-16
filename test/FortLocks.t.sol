@@ -121,6 +121,23 @@ contract MockPositionManager is ERC721, IPositionManager {
     }
 }
 
+contract FeeOnTransferERC20 is MockERC20 {
+    uint256 public constant TAX_BPS = 100;
+    uint256 public constant BPS = 10_000;
+    constructor() MockERC20("Fee Token", "FEE") {}
+
+    function _update(address from, address to, uint256 value) internal override {
+        if (from != address(0) && to != address(0)) {
+            uint256 tax = (value * TAX_BPS) / BPS;
+
+            super._update(from, address(0), tax);
+            super._update(from, to, value - tax);
+        } else {
+            super._update(from, to, value);
+        }
+    }
+}
+
 contract RandomNFT is ERC721 {
     constructor() ERC721("Random NFT", "RND") {}
 
@@ -759,5 +776,28 @@ contract FortLocksTest is Test {
         assertEq(token1.balanceOf(address(fort)), 0);
 
         assertEq(positionManager.ownerOf(TOKEN_ID), address(fort));
+    }
+
+    function test_FeeOnTransferTokenCausesAtomicCollectRevert() public {
+        address positionOwner = address(0xA11CE);
+        FeeOnTransferERC20 feeToken = new FeeOnTransferERC20();
+
+        uint256 tokenId = 999;
+        uint256 collectedAmount = 10_000;
+
+        feeToken.mint(address(positionManager), collectedAmount);
+
+        positionManager.initializeTokens(feeToken, token1);
+
+        positionManager.mint(positionOwner, tokenId);
+        vm.startPrank(positionOwner);
+        positionManager.approve(address(fort), tokenId);
+        fort.lock(tokenId, beneficiary);
+        vm.stopPrank();
+
+        positionManager.setFees(tokenId, collectedAmount, 0);
+        vm.expectRevert();
+        vm.prank(beneficiary);
+        fort.collectFees(tokenId);
     }
 }
