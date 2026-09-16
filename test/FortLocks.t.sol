@@ -68,6 +68,24 @@ contract ReentrantERC20 is ERC20 {
     }
 }
 
+contract RevertingTransferERC20 is MockERC20 {
+    address public blockedRecipient;
+
+    constructor() MockERC20("Reverting Token", "REVERT") {}
+
+    function setBlockedRecipient(address recipient) external {
+        blockedRecipient = recipient;
+    }
+
+    function _update(address from, address to, uint256 value) internal override {
+        if (to == blockedRecipient) {
+            revert("BLOCKED_RECIPIENT");
+        }
+
+        super._update(from, to, value);
+    }
+}
+
 contract MockPositionManager is ERC721, IPositionManager {
     mapping(uint256 tokenId => uint256 amount0) public fees0;
     mapping(uint256 tokenId => uint256 amount1) public fees1;
@@ -799,5 +817,45 @@ contract FortLocksTest is Test {
         vm.expectRevert();
         vm.prank(beneficiary);
         fort.collectFees(tokenId);
+    }
+
+    function test_FailedSecondTokenTransferRollsBackEntireCollection() public {
+        MockERC20 normalToken = new MockERC20("Normal Token", "NORMAL");
+
+        RevertingTransferERC20 revertingToken = new RevertingTransferERC20();
+
+        positionManager.initializeTokens(normalToken, revertingToken);
+
+        address positionOwner = address(0xA11CE);
+        uint256 tokenId = 1_000;
+
+        positionManager.mint(positionOwner, tokenId);
+
+        vm.startPrank(positionOwner);
+        positionManager.approve(address(fort), tokenId);
+        fort.lock(tokenId, beneficiary);
+        vm.stopPrank();
+
+        uint256 feeAmount = 10_000;
+
+        normalToken.mint(address(positionManager), feeAmount);
+        revertingToken.mint(address(positionManager), feeAmount);
+
+        positionManager.setFees(tokenId, feeAmount, feeAmount);
+
+        revertingToken.setBlockedRecipient(beneficiary);
+
+        vm.expectRevert("BLOCKED_RECIPIENT");
+        vm.prank(beneficiary);
+        fort.collectFees(tokenId);
+
+        assertEq(normalToken.balanceOf(beneficiary), 0);
+        assertEq(normalToken.balanceOf(fortFeeRecipient), 0);
+
+        assertEq(revertingToken.balanceOf(beneficiary), 0);
+        assertEq(revertingToken.balanceOf(fortFeeRecipient), 0);
+
+        assertEq(normalToken.balanceOf(address(positionManager)), feeAmount);
+        assertEq(revertingToken.balanceOf(address(positionManager)), feeAmount);
     }
 }
