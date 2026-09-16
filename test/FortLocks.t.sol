@@ -858,4 +858,38 @@ contract FortLocksTest is Test {
         assertEq(normalToken.balanceOf(address(positionManager)), feeAmount);
         assertEq(revertingToken.balanceOf(address(positionManager)), feeAmount);
     }
+
+    function test_FailedInitialFlushRollsBackEntireLock() public {
+        RevertingTransferERC20 revertingToken = new RevertingTransferERC20();
+
+        positionManager.initializeTokens(revertingToken, token1);
+
+        address positionOwner = address(0xA11CE);
+        uint256 tokenId = 1_001;
+        uint256 owedAmount = 10_000;
+
+        positionManager.mint(positionOwner, tokenId);
+
+        revertingToken.mint(address(positionManager), owedAmount);
+
+        positionManager.setFees(tokenId, owedAmount, 0);
+
+        revertingToken.setBlockedRecipient(beneficiary);
+
+        vm.startPrank(positionOwner);
+        positionManager.approve(address(fort), tokenId);
+
+        vm.expectRevert("BLOCKED_RECIPIENT");
+        fort.lock(tokenId, beneficiary);
+
+        vm.stopPrank();
+
+        assertEq(positionManager.ownerOf(tokenId), positionOwner);
+
+        assertEq(fort.locks(tokenId), address(0));
+
+        assertEq(revertingToken.balanceOf(address(positionManager)), owedAmount);
+
+        assertEq(revertingToken.balanceOf(beneficiary), 0);
+    }
 }
