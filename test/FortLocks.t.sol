@@ -119,8 +119,6 @@ contract MockPositionManager is ERC721, IPositionManager {
             token1.transfer(params.recipient, amount1);
         }
     }
-
-    
 }
 
 contract RandomNFT is ERC721 {

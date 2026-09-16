@@ -47,6 +47,11 @@ contract FortLocksForkTest is Test {
     address constant POSITION_MANAGER = 0xC36442b4a4522E871399CD717aBDD847Ab11FE88;
     address constant UNISWAP_V3_FACTORY = 0x1F98431c8aD98523631AE4a59f267346ea31F984;
     address constant SWAP_ROUTER = 0xE592427A0AEce92De3Edee1F18E0157C05861564;
+    uint256 constant FORK_BLOCK = 25_991_346;
+
+    function setUp() public {
+        vm.createSelectFork(vm.envString("ETH_RPC_URL"), FORK_BLOCK);
+    }
 
     function test_CanonicalPositionManagerExistsOnMainnet() public view {
         assertGt(POSITION_MANAGER.code.length, 0);
