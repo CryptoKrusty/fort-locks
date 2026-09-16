@@ -91,7 +91,7 @@ contract FortLocks is IERC721Receiver, ReentrancyGuard {
     }
 
     /// @notice Collects post-lock trading fees for a locked position.
-    /// @dev Only the immutable beneficiary may call this function. Fort receives 0.9%
+    /// @dev Only the permanent beneficiary may call this function. Fort receives 0.9%
     ///      of each collected token amount and the beneficiary receives the remainder.
     /// @param tokenId Uniswap V3 position NFT token ID.
     /// @return amount0 Total amount of token0 collected from the position.
