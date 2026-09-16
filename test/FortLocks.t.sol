@@ -3,8 +3,8 @@ pragma solidity 0.8.35;
 
 import {Test} from "forge-std/Test.sol";
 import {ERC721} from "@openzeppelin/contracts/token/ERC721/ERC721.sol";
-
-import {FortLocks, IPositionManagerCollect} from "../src/FortLocks.sol";
+import {FortLocks} from "../src/FortLocks.sol";
+import {IPositionManager} from "../src/interfaces/IPositionManager.sol";
 import {ERC20} from "@openzeppelin/contracts/token/ERC20/ERC20.sol";
 import {ReentrancyGuard} from "@openzeppelin/contracts/utils/ReentrancyGuard.sol";
 
@@ -68,7 +68,7 @@ contract ReentrantERC20 is ERC20 {
     }
 }
 
-contract MockPositionManager is ERC721 {
+contract MockPositionManager is ERC721, IPositionManager {
     mapping(uint256 tokenId => uint256 amount0) public fees0;
     mapping(uint256 tokenId => uint256 amount1) public fees1;
     MockERC20 public token0;
@@ -93,17 +93,17 @@ contract MockPositionManager is ERC721 {
         fees1[tokenId] = amount1;
     }
 
-    function positions(uint256)
-        external
-        view
-        returns (uint96, address, address, address, uint24, int24, int24, uint128, uint256, uint256, uint128, uint128)
-    {
-        return (0, address(0), address(token0), address(token1), 3000, 0, 0, 1, 0, 0, 0, 0);
+    function positions(uint256) external view override returns (IPositionManager.Position memory position) {
+        position.token0 = address(token0);
+        position.token1 = address(token1);
+        position.fee = 3000;
+        position.liquidity = 1;
     }
 
-    function collect(IPositionManagerCollect.CollectParams calldata params)
+    function collect(IPositionManager.CollectParams calldata params)
         external
         payable
+        override
         returns (uint256 amount0, uint256 amount1)
     {
         amount0 = fees0[params.tokenId];
@@ -210,15 +210,14 @@ contract FortLocksTest is Test {
     }
 
     function test_RejectsArbitraryERC721() public {
-        RandomNFT randomNFT = new RandomNFT();
-
+        RandomNFT randomNft = new RandomNFT();
         uint256 randomTokenId = 77;
 
-        randomNFT.mint(address(this), randomTokenId);
+        randomNft.mint(address(this), randomTokenId);
 
         vm.expectRevert(FortLocks.InvalidNFT.selector);
 
-        randomNFT.safeTransferFrom(address(this), address(fort), randomTokenId);
+        randomNft.safeTransferFrom(address(this), address(fort), randomTokenId);
     }
 
     function test_RejectsDirectPositionNFTTransfer() public {

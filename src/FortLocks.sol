@@ -6,34 +6,7 @@ import {IERC721Receiver} from "@openzeppelin/contracts/token/ERC721/IERC721Recei
 import {IERC20} from "@openzeppelin/contracts/token/ERC20/IERC20.sol";
 import {SafeERC20} from "@openzeppelin/contracts/token/ERC20/utils/SafeERC20.sol";
 import {ReentrancyGuard} from "@openzeppelin/contracts/utils/ReentrancyGuard.sol";
-
-interface IPositionManagerCollect {
-    struct CollectParams {
-        uint256 tokenId;
-        address recipient;
-        uint128 amount0Max;
-        uint128 amount1Max;
-    }
-
-    struct Position {
-        uint96 nonce;
-        address operator;
-        address token0;
-        address token1;
-        uint24 fee;
-        int24 tickLower;
-        int24 tickUpper;
-        uint128 liquidity;
-        uint256 feeGrowthInside0LastX128;
-        uint256 feeGrowthInside1LastX128;
-        uint128 tokensOwed0;
-        uint128 tokensOwed1;
-    }
-
-    function positions(uint256 tokenId) external view returns (Position memory position);
-
-    function collect(CollectParams calldata params) external payable returns (uint256 amount0, uint256 amount1);
-}
+import {IPositionManager} from "./interfaces/IPositionManager.sol";
 
 contract FortLocks is IERC721Receiver, ReentrancyGuard {
     using SafeERC20 for IERC20;
@@ -90,6 +63,9 @@ contract FortLocks is IERC721Receiver, ReentrancyGuard {
 
         _flushPreExistingOwedTokens(tokenId, beneficiary);
 
+        // Emitted only after the NFT transfer and initial flush complete successfully.
+        // lock() is protected by nonReentrant.
+        // forge-lint: disable-next-line(reentrancy-events)
         emit Locked(tokenId, beneficiary);
     }
 
@@ -102,9 +78,9 @@ contract FortLocks is IERC721Receiver, ReentrancyGuard {
 
         (address token0, address token1) = _getPositionTokens(tokenId);
 
-        (amount0, amount1) = IPositionManagerCollect(POSITION_MANAGER)
+        (amount0, amount1) = IPositionManager(POSITION_MANAGER)
             .collect(
-                IPositionManagerCollect.CollectParams({
+                IPositionManager.CollectParams({
                     tokenId: tokenId,
                     recipient: address(this),
                     amount0Max: type(uint128).max,
@@ -130,26 +106,34 @@ contract FortLocks is IERC721Receiver, ReentrancyGuard {
         if (amount1 > fortFee1) {
             IERC20(token1).safeTransfer(lockData.beneficiary, amount1 - fortFee1);
         }
+        // Emitted only after all fee transfers complete successfully.
+        // collectFees() is protected by nonReentrant.
+        // forge-lint: disable-next-line(reentrancy-events)
         emit FeesCollected(tokenId, lockData.beneficiary, amount0, amount1, fortFee0, fortFee1);
     }
 
     function _getPositionTokens(uint256 tokenId) internal view returns (address token0, address token1) {
-        IPositionManagerCollect.Position memory position = IPositionManagerCollect(POSITION_MANAGER).positions(tokenId);
+        IPositionManager.Position memory position = IPositionManager(POSITION_MANAGER).positions(tokenId);
 
         token0 = position.token0;
         token1 = position.token1;
     }
 
     function _flushPreExistingOwedTokens(uint256 tokenId, address beneficiary) internal {
-        IPositionManagerCollect(POSITION_MANAGER)
+        // The Position Manager sends the entire pre-existing owed amount
+        // directly to the beneficiary; Fort does not charge a fee here.
+        (uint256 amount0, uint256 amount1) = IPositionManager(POSITION_MANAGER)
             .collect(
-                IPositionManagerCollect.CollectParams({
+                IPositionManager.CollectParams({
                     tokenId: tokenId,
                     recipient: beneficiary,
                     amount0Max: type(uint128).max,
                     amount1Max: type(uint128).max
                 })
             );
+
+        amount0;
+        amount1;
     }
 
     function onERC721Received(address operator, address, uint256, bytes calldata) external view returns (bytes4) {
