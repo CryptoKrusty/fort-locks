@@ -9,6 +9,7 @@ interface IPositionManager {
         uint128 amount1Max;
     }
 
+  
     struct Position {
         uint96 nonce;
         address operator;
@@ -28,3 +29,4 @@ interface IPositionManager {
 
     function collect(CollectParams calldata params) external payable returns (uint256 amount0, uint256 amount1);
 }
+    
