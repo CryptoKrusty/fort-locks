@@ -643,4 +643,122 @@ contract FortLocksTest is Test {
 
         assertEq(positionManager.ownerOf(TOKEN_ID), address(fort));
     }
+
+    function test_FortFeeRecipientHasNoControlOverLockedNFT() public {
+        vm.startPrank(locker);
+
+        positionManager.approve(address(fort), TOKEN_ID);
+        fort.lock(TOKEN_ID, beneficiary);
+
+        vm.stopPrank();
+
+        vm.prank(fortFeeRecipient);
+
+        vm.expectRevert();
+
+        positionManager.transferFrom(address(fort), fortFeeRecipient, TOKEN_ID);
+
+        assertEq(positionManager.ownerOf(TOKEN_ID), address(fort));
+    }
+
+    function test_LockedNFTNeverHasExternalApproval() public {
+        vm.startPrank(locker);
+
+        positionManager.approve(address(fort), TOKEN_ID);
+        fort.lock(TOKEN_ID, beneficiary);
+
+        vm.stopPrank();
+
+        assertEq(positionManager.getApproved(TOKEN_ID), address(0));
+    }
+
+    function test_FeesAfterInitialFlushUseNormalFortFee() public {
+        uint256 preExistingAmount = 100 ether;
+        uint256 laterFees = 200 ether;
+
+        token0.mint(address(positionManager), preExistingAmount + laterFees);
+
+        positionManager.setFees(TOKEN_ID, preExistingAmount, 0);
+
+        vm.startPrank(locker);
+
+        positionManager.approve(address(fort), TOKEN_ID);
+        fort.lock(TOKEN_ID, beneficiary);
+
+        vm.stopPrank();
+
+        // Everything owed before locking goes to the beneficiary.
+        assertEq(token0.balanceOf(beneficiary), preExistingAmount);
+
+        assertEq(token0.balanceOf(fortFeeRecipient), 0);
+
+        // Simulate fees generated after the position is locked.
+        positionManager.setFees(TOKEN_ID, laterFees, 0);
+
+        vm.prank(beneficiary);
+        fort.collectFees(TOKEN_ID);
+
+        uint256 expectedFortFee = (laterFees * 90) / 10_000;
+
+        assertEq(token0.balanceOf(fortFeeRecipient), expectedFortFee);
+
+        assertEq(token0.balanceOf(beneficiary), preExistingAmount + laterFees - expectedFortFee);
+
+        assertEq(positionManager.ownerOf(TOKEN_ID), address(fort));
+    }
+
+    function test_BothTokensFlushThenUseNormalFortFee() public {
+        uint256 preExisting0 = 100 ether;
+        uint256 preExisting1 = 300 ether;
+
+        uint256 laterFees0 = 200 ether;
+        uint256 laterFees1 = 400 ether;
+
+        token0.mint(address(positionManager), preExisting0 + laterFees0);
+
+        token1.mint(address(positionManager), preExisting1 + laterFees1);
+
+        // Amounts already owed before the NFT enters Fort.
+        positionManager.setFees(TOKEN_ID, preExisting0, preExisting1);
+
+        vm.startPrank(locker);
+
+        positionManager.approve(address(fort), TOKEN_ID);
+        fort.lock(TOKEN_ID, beneficiary);
+
+        vm.stopPrank();
+
+        // Pre-existing amounts are flushed with zero Fort fee.
+        assertEq(token0.balanceOf(beneficiary), preExisting0);
+
+        assertEq(token1.balanceOf(beneficiary), preExisting1);
+
+        assertEq(token0.balanceOf(fortFeeRecipient), 0);
+
+        assertEq(token1.balanceOf(fortFeeRecipient), 0);
+
+        // Simulate new fees generated after the permanent lock.
+        positionManager.setFees(TOKEN_ID, laterFees0, laterFees1);
+
+        vm.prank(beneficiary);
+        fort.collectFees(TOKEN_ID);
+
+        uint256 expectedFortFee0 = (laterFees0 * 90) / 10_000;
+
+        uint256 expectedFortFee1 = (laterFees1 * 90) / 10_000;
+
+        assertEq(token0.balanceOf(fortFeeRecipient), expectedFortFee0);
+
+        assertEq(token1.balanceOf(fortFeeRecipient), expectedFortFee1);
+
+        assertEq(token0.balanceOf(beneficiary), preExisting0 + laterFees0 - expectedFortFee0);
+
+        assertEq(token1.balanceOf(beneficiary), preExisting1 + laterFees1 - expectedFortFee1);
+
+        assertEq(token0.balanceOf(address(fort)), 0);
+
+        assertEq(token1.balanceOf(address(fort)), 0);
+
+        assertEq(positionManager.ownerOf(TOKEN_ID), address(fort));
+    }
 }
