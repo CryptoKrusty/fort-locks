@@ -47,9 +47,9 @@ contract FortLocks is IERC721Receiver, ReentrancyGuard {
         address beneficiary;
     }
     /// @notice Canonical Uniswap V3 NonfungiblePositionManager on Ethereum mainnet.
-    /// @dev Fort accepts position NFTs only from this immutable address.
+    /// @dev Fort accepts position NFTs only from this fixed address.
     address public constant POSITION_MANAGER = 0xC36442b4a4522E871399CD717aBDD847Ab11FE88;
-    /// @notice Returns the immutable lock record for a Uniswap V3 position token ID.
+    /// @notice Returns the permanent lock record for a Uniswap V3 position token ID.
     /// @dev A zero beneficiary means the token ID has not been locked through Fort.
     mapping(uint256 tokenId => Lock lockData) public locks;
 
