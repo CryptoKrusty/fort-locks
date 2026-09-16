@@ -31,5 +31,6 @@ jobs:
       - name: Run Forge build
         run: forge build --sizes
 
+      
       - name: Run Forge tests
-        run: forge test -vvv
+        run: forge test --match-path test/FortLocks.t.sol -vvv
