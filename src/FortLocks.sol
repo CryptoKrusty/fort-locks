@@ -40,6 +40,7 @@ contract FortLocks is IERC721Receiver, ReentrancyGuard {
     /// @notice Address that permanently receives Fort's 0.9% share of collected fees.
     /// @dev Set once at deployment and cannot be changed.
     address public immutable FORT_FEE_RECIPIENT;
+
     /// @notice Permanent record of the beneficiary entitled to collect post-lock fees.
     /// @dev Once created, the beneficiary cannot be changed.
     struct Lock {
