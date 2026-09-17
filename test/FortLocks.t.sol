@@ -296,17 +296,81 @@ contract FortLocksTest is Test {
         assertEq(token1.balanceOf(address(fort)), 0);
     }
 
-    function test_RevertIfNonBeneficiaryCollectsFees() public {
+    function test_AnyoneCanCollectFeesButCannotReceiveProceeds() public {
         vm.startPrank(locker);
         positionManager.approve(address(fort), TOKEN_ID);
         fort.lock(TOKEN_ID, beneficiary);
         vm.stopPrank();
 
-        address attacker = address(0xBAD);
+        uint256 amount0 = 100_000;
+        uint256 amount1 = 200_000;
 
-        vm.expectRevert(FortLocks.NotBeneficiary.selector);
-        vm.prank(attacker);
+        positionManager.setFees(TOKEN_ID, amount0, amount1);
+
+        token0.mint(address(positionManager), amount0);
+        token1.mint(address(positionManager), amount1);
+
+        address caller = address(0xBAD);
+
+        uint256 callerBalance0Before = token0.balanceOf(caller);
+        uint256 callerBalance1Before = token1.balanceOf(caller);
+
+        vm.prank(caller);
         fort.collectFees(TOKEN_ID);
+
+        assertEq(token0.balanceOf(caller), callerBalance0Before);
+        assertEq(token1.balanceOf(caller), callerBalance1Before);
+    }
+
+    function test_PermissionlessTinyCollectionsCannotReduceFortFee() public {
+        vm.startPrank(locker);
+        positionManager.approve(address(fort), TOKEN_ID);
+        fort.lock(TOKEN_ID, beneficiary);
+        vm.stopPrank();
+
+        address caller = address(0xBAD);
+
+        for (uint256 i = 0; i < 100; i++) {
+            uint256 amount = 100;
+
+            positionManager.setFees(TOKEN_ID, amount, 0);
+            token0.mint(address(positionManager), amount);
+
+            vm.prank(caller);
+            fort.collectFees(TOKEN_ID);
+        }
+
+        assertEq(token0.balanceOf(fortFeeRecipient), 90);
+        assertEq(token0.balanceOf(beneficiary), 9_910);
+    }
+
+    function testFuzz_SplitCollectionsPreserveCumulativeFortFee(uint96 amountPerCollection, uint8 collectionCount)
+        public
+    {
+        amountPerCollection = uint96(bound(amountPerCollection, 1, 1_000_000_000));
+        collectionCount = uint8(bound(collectionCount, 1, 100));
+
+        vm.startPrank(locker);
+        positionManager.approve(address(fort), TOKEN_ID);
+        fort.lock(TOKEN_ID, beneficiary);
+        vm.stopPrank();
+
+        address caller = address(0xBAD);
+
+        for (uint256 i = 0; i < collectionCount; i++) {
+            positionManager.setFees(TOKEN_ID, amountPerCollection, 0);
+            token0.mint(address(positionManager), amountPerCollection);
+
+            vm.prank(caller);
+            fort.collectFees(TOKEN_ID);
+        }
+
+        uint256 totalCollected = uint256(amountPerCollection) * collectionCount;
+
+        uint256 expectedFortFee = (totalCollected * fort.FORT_FEE_BPS()) / fort.BPS_DENOMINATOR();
+
+        assertEq(token0.balanceOf(fortFeeRecipient), expectedFortFee);
+        assertEq(token0.balanceOf(beneficiary), totalCollected - expectedFortFee);
     }
 
     function test_CollectFeeRoundingFavorsBeneficiary() public {
@@ -450,7 +514,7 @@ contract FortLocksTest is Test {
     function test_RevertCollectForUnlockedToken() public {
         uint256 unlockedTokenId = 999;
 
-        vm.expectRevert(FortLocks.NotBeneficiary.selector);
+        vm.expectRevert(FortLocks.NotLocked.selector);
         vm.prank(beneficiary);
         fort.collectFees(unlockedTokenId);
     }
@@ -503,6 +567,36 @@ contract FortLocksTest is Test {
         vm.stopPrank();
 
         assertEq(positionManager.ownerOf(TOKEN_ID), address(fort));
+    }
+
+    function test_IrregularCollectionsPreserveCumulativeFortFee() public {
+        vm.startPrank(locker);
+        positionManager.approve(address(fort), TOKEN_ID);
+        fort.lock(TOKEN_ID, beneficiary);
+        vm.stopPrank();
+
+        address caller = address(0xBAD);
+
+        uint256[6] memory amounts =
+            [uint256(1), uint256(37), uint256(999), uint256(12_345), uint256(7), uint256(86_611)];
+
+        uint256 totalCollected;
+
+        for (uint256 i = 0; i < amounts.length; i++) {
+            uint256 amount = amounts[i];
+            totalCollected += amount;
+
+            positionManager.setFees(TOKEN_ID, amount, 0);
+            token0.mint(address(positionManager), amount);
+
+            vm.prank(caller);
+            fort.collectFees(TOKEN_ID);
+        }
+
+        uint256 expectedFortFee = (totalCollected * fort.FORT_FEE_BPS()) / fort.BPS_DENOMINATOR();
+
+        assertEq(token0.balanceOf(fortFeeRecipient), expectedFortFee);
+        assertEq(token0.balanceOf(beneficiary), totalCollected - expectedFortFee);
     }
 
     function test_BeneficiaryNeverReceivesNFTApproval() public {
@@ -857,6 +951,75 @@ contract FortLocksTest is Test {
 
         assertEq(normalToken.balanceOf(address(positionManager)), feeAmount);
         assertEq(revertingToken.balanceOf(address(positionManager)), feeAmount);
+    }
+
+    function test_FailedCollectionRollsBackFeeRemainder() public {
+        MockERC20 normalToken = new MockERC20("Normal Token", "NORMAL");
+        RevertingTransferERC20 revertingToken = new RevertingTransferERC20();
+
+        positionManager.initializeTokens(normalToken, revertingToken);
+
+        address positionOwner = address(0xA11CE);
+        uint256 tokenId = 1_000;
+
+        positionManager.mint(positionOwner, tokenId);
+
+        vm.startPrank(positionOwner);
+        positionManager.approve(address(fort), tokenId);
+        fort.lock(tokenId, beneficiary);
+        vm.stopPrank();
+
+        uint256 feeAmount = 100;
+
+        normalToken.mint(address(positionManager), feeAmount);
+        revertingToken.mint(address(positionManager), feeAmount);
+        positionManager.setFees(tokenId, feeAmount, feeAmount);
+
+        revertingToken.setBlockedRecipient(beneficiary);
+
+        vm.expectRevert("BLOCKED_RECIPIENT");
+        vm.prank(address(0xBAD));
+        fort.collectFees(tokenId);
+
+        // Allow the retry to succeed.
+        revertingToken.setBlockedRecipient(address(0));
+
+        vm.prank(address(0xBEEF));
+        fort.collectFees(tokenId);
+
+        assertEq(normalToken.balanceOf(fortFeeRecipient), 0);
+        assertEq(revertingToken.balanceOf(fortFeeRecipient), 0);
+
+        assertEq(normalToken.balanceOf(beneficiary), feeAmount);
+        assertEq(revertingToken.balanceOf(beneficiary), feeAmount);
+    }
+
+    function test_FeeRemaindersAreIndependentForToken0AndToken1() public {
+        vm.startPrank(locker);
+        positionManager.approve(address(fort), TOKEN_ID);
+        fort.lock(TOKEN_ID, beneficiary);
+        vm.stopPrank();
+
+        address caller = address(0xBAD);
+
+        positionManager.setFees(TOKEN_ID, 100, 200);
+        token0.mint(address(positionManager), 100);
+        token1.mint(address(positionManager), 200);
+
+        vm.prank(caller);
+        fort.collectFees(TOKEN_ID);
+
+        positionManager.setFees(TOKEN_ID, 100, 0);
+        token0.mint(address(positionManager), 100);
+
+        vm.prank(caller);
+        fort.collectFees(TOKEN_ID);
+
+        assertEq(token0.balanceOf(fortFeeRecipient), 1);
+        assertEq(token1.balanceOf(fortFeeRecipient), 1);
+
+        assertEq(token0.balanceOf(beneficiary), 199);
+        assertEq(token1.balanceOf(beneficiary), 199);
     }
 
     function test_FailedInitialFlushRollsBackEntireLock() public {

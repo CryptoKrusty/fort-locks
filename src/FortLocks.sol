@@ -31,7 +31,7 @@ contract FortLocks is IERC721Receiver, ReentrancyGuard {
     error AlreadyLocked();
     error InvalidNFT();
     error InvalidTransfer();
-    error NotBeneficiary();
+    error NotLocked();
 
     /// @notice Fort's share of post-lock collected trading fees: 0.9%.
     /// @dev Expressed in basis points; 90 / 10,000 = 0.009.
@@ -52,6 +52,11 @@ contract FortLocks is IERC721Receiver, ReentrancyGuard {
     /// @notice Returns the permanent lock record for a Uniswap V3 position token ID.
     /// @dev A zero beneficiary means the token ID has not been locked through Fort.
     mapping(uint256 tokenId => Lock lockData) public locks;
+
+    /// @dev Carries fractional Fort fee numerators between collections so splitting
+    ///      collections cannot reduce Fort's cumulative fee.
+    mapping(uint256 tokenId => uint256 remainder0) private _feeRemainder0;
+    mapping(uint256 tokenId => uint256 remainder1) private _feeRemainder1;
 
     /// @notice Deploys Fort with its permanent protocol fee recipient.
     /// @param _fortFeeRecipient Address that receives Fort's 0.9% share of post-lock fees.
@@ -91,16 +96,16 @@ contract FortLocks is IERC721Receiver, ReentrancyGuard {
     }
 
     /// @notice Collects post-lock trading fees for a locked position.
-    /// @dev Only the permanent beneficiary may call this function. Fort receives 0.9%
-    ///      of each collected token amount and the beneficiary receives the remainder.
+    /// @dev Anyone may call this function. Fort receives a cumulative 0.9% of
+    ///      post-lock collected fees and the permanent beneficiary receives the remainder.
     /// @param tokenId Uniswap V3 position NFT token ID.
     /// @return amount0 Total amount of token0 collected from the position.
     /// @return amount1 Total amount of token1 collected from the position.
     function collectFees(uint256 tokenId) external nonReentrant returns (uint256 amount0, uint256 amount1) {
         Lock memory lockData = locks[tokenId];
 
-        if (lockData.beneficiary != msg.sender) {
-            revert NotBeneficiary();
+        if (lockData.beneficiary == address(0)) {
+            revert NotLocked();
         }
 
         (address token0, address token1) = _getPositionTokens(tokenId);
@@ -115,8 +120,14 @@ contract FortLocks is IERC721Receiver, ReentrancyGuard {
                 })
             );
 
-        uint256 fortFee0 = (amount0 * FORT_FEE_BPS) / BPS_DENOMINATOR;
-        uint256 fortFee1 = (amount1 * FORT_FEE_BPS) / BPS_DENOMINATOR;
+        uint256 feeNumerator0 = (amount0 * FORT_FEE_BPS) + _feeRemainder0[tokenId];
+        uint256 feeNumerator1 = (amount1 * FORT_FEE_BPS) + _feeRemainder1[tokenId];
+
+        uint256 fortFee0 = feeNumerator0 / BPS_DENOMINATOR;
+        uint256 fortFee1 = feeNumerator1 / BPS_DENOMINATOR;
+
+        _feeRemainder0[tokenId] = feeNumerator0 % BPS_DENOMINATOR;
+        _feeRemainder1[tokenId] = feeNumerator1 % BPS_DENOMINATOR;
 
         if (fortFee0 > 0) {
             IERC20(token0).safeTransfer(FORT_FEE_RECIPIENT, fortFee0);
