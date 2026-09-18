@@ -12,7 +12,7 @@ import {IPositionManager} from "./interfaces/IPositionManager.sol";
 
 /// @title Fort Locks
 /// @notice Permanently locks Uniswap V3 liquidity position NFTs while allowing
-///         an immutable beneficiary to collect post-lock trading fees.
+///         post-lock trading fees to be distributed to a permanent beneficiary.
 /// @dev Locked position NFTs cannot be withdrawn, transferred, decreased,
 ///      burned, migrated, or recovered through this contract.
 contract FortLocks is IERC721Receiver, ReentrancyGuard {
@@ -41,7 +41,7 @@ contract FortLocks is IERC721Receiver, ReentrancyGuard {
     /// @dev Set once at deployment and cannot be changed.
     address public immutable FORT_FEE_RECIPIENT;
 
-    /// @notice Permanent record of the beneficiary entitled to collect post-lock fees.
+    /// @notice Permanent record of the beneficiary entitled to receive post-lock fee proceeds.
     /// @dev Once created, the beneficiary cannot be changed.
     struct Lock {
         address beneficiary;
@@ -72,7 +72,7 @@ contract FortLocks is IERC721Receiver, ReentrancyGuard {
     /// @dev Any tokens already owed by the position are sent directly to the beneficiary
     ///      during locking and are not charged the Fort fee.
     /// @param tokenId Uniswap V3 position NFT token ID to lock.
-    /// @param beneficiary Address permanently entitled to collect post-lock fees.
+    /// @param beneficiary Address permanently entitled to receive post-lock fee proceeds.
     function lock(uint256 tokenId, address beneficiary) external nonReentrant {
         if (beneficiary == address(0)) revert ZeroAddress();
         if (locks[tokenId].beneficiary != address(0)) revert AlreadyLocked();
@@ -95,7 +95,7 @@ contract FortLocks is IERC721Receiver, ReentrancyGuard {
         emit Locked(tokenId, beneficiary);
     }
 
-    /// @notice Collects post-lock trading fees for a locked position.
+    /// @notice Permissionlessly collects and distributes post-lock trading fees for a locked position.
     /// @dev Anyone may call this function. Fort receives a cumulative 0.9% of
     ///      post-lock collected fees and the permanent beneficiary receives the remainder.
     /// @param tokenId Uniswap V3 position NFT token ID.
